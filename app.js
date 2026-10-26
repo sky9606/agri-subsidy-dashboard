@@ -727,6 +727,309 @@
     renderTable();
   }
 
+  /* ================= 关键字搜索 ================= */
+  /* 索引来自 D.search（build_data.py 预聚合）：省 26 / 区县 2.1k / 乡镇 1.7万 /
+     厂家 131 / 型号 293 / 品目 7 / 经销商 1万。总量约 3 万条，本地线性扫描即可毫秒级出结果。 */
+  var SR = D.search || {};
+  var KIND_ORDER = ['省', '厂家', '型号', '品目', '区县', '乡镇', '经销商'];
+  var PER_KIND = 6;
+  var LIST = (function () {
+    var arr = [];
+    function add(kind, name, q, y6, d) {
+      arr.push({ k: kind, n: String(name), ln: String(name).toLowerCase(), q: q || 0, y: y6 || null, d: d || {} });
+    }
+    (SR.u || []).forEach(function (r) { add('省', r[0], r[1], r[2], { prov: r[0] }); });
+    (SR.c || []).forEach(function (r) { add('区县', r[0], r[2], r[3], { prov: UNITS[r[1]], county: r[0] }); });
+    (SR.t || []).forEach(function (r) {
+      var c = (SR.c || [])[r[1]];
+      if (!c) return;
+      add('乡镇', r[0], r[2], r[3], { prov: UNITS[c[1]], county: c[0] });
+    });
+    (SR.f || []).forEach(function (r) { add('厂家', r[0], r[1], r[3], { amt: r[2], top: r[4], pc: r[5] }); });
+    (SR.m || []).forEach(function (r) {
+      add('型号', r[0], r[2], r[4], { fac: r[1], amt: r[3], top: r[5], pc: r[6] });
+    });
+    (SR.k || []).forEach(function (r) { add('品目', r[0], r[1], r[2], { top: r[3], pc: r[4] }); });
+    (SR.d || []).forEach(function (r) {
+      var c = r[2] >= 0 ? (SR.c || [])[r[2]] : null;
+      add('经销商', r[0], r[3], r[4], { prov: UNITS[r[1]], county: c ? c[0] : '' });
+    });
+    return arr;
+  })();
+
+  var input = document.getElementById('searchInput');
+  var box = document.getElementById('searchBox');
+  var panel = document.getElementById('searchPanel');
+  var clearBtn = document.getElementById('searchClear');
+  var HITS = [];        // 当前面板里的可点条目（按显示顺序）
+  var ACTIVE = -1;      // 键盘高亮下标
+
+  function qtyOf(it) {
+    if (S.year !== 'all' && it.y) {
+      var i = D.meta.years.indexOf(+S.year);
+      if (i >= 0) return it.y[i] || 0;
+    }
+    return it.q;
+  }
+  function hl(name, kw) {
+    var p = name.toLowerCase().indexOf(kw);
+    if (p < 0) return esc(name);
+    return esc(name.slice(0, p)) + '<mark>' + esc(name.slice(p, p + kw.length)) + '</mark>' +
+      esc(name.slice(p + kw.length));
+  }
+  function subOf(it) {
+    if (it.k === '型号' && it.d.fac) return shortCorp(it.d.fac);
+    if (it.k === '厂家') return '覆盖 ' + (it.d.pc || 0) + ' 个省级单元';
+    if (it.k === '经销商') return [it.d.county, shortProv(it.d.prov)].filter(Boolean).join(' · ') || '—';
+    if (it.k === '区县') return shortProv(it.d.prov);
+    if (it.k === '乡镇') return (it.d.county || '') + ' · ' + shortProv(it.d.prov);
+    if (it.k === '品目') return '品目 07 细分';
+    if (it.k === '省') return '省级单元';
+    return '';
+  }
+
+  function match(kw) {
+    var out = [];
+    for (var i = 0; i < LIST.length; i++) {
+      var it = LIST[i], p = it.ln.indexOf(kw);
+      if (p < 0) continue;
+      out.push({ it: it, sc: p === 0 ? (it.ln.length === kw.length ? 0 : 1) : 2, p: p });
+    }
+    out.sort(function (a, b) { return a.sc - b.sc || a.p - b.p || qtyOf(b.it) - qtyOf(a.it); });
+    return out;
+  }
+
+  function rowHTML(it, kw, idx) {
+    var v = qtyOf(it);
+    return '<div class="s-row" data-h="' + idx + '">' +
+      '<div class="nl"><div class="nm">' + (kw ? hl(it.n, kw) : esc(it.n)) + '</div>' +
+      '<div class="sub">' + esc(subOf(it)) + '</div></div>' +
+      '<div class="v">' + (v ? fmtInt(v) : '—') + '<small>台</small></div></div>';
+  }
+
+  function renderPanel(hits, kw) {
+    HITS = [];
+    ACTIVE = -1;
+    if (!hits.length) {
+      panel.innerHTML = '<div class="s-empty">没有匹配 <b>' + esc(kw) + '</b> 的厂家 / 型号 / 地区 / 经销商' +
+        '<br><span style="font-size:11.5px">可试试简称，如「华测」「北斗」「黑龙江」</span></div>';
+      panel.classList.add('on');
+      return;
+    }
+    var groups = {}, counts = {}, order = [];
+    hits.forEach(function (h) {
+      var k = h.it.k;
+      counts[k] = (counts[k] || 0) + 1;
+      if (!groups[k]) { groups[k] = []; order.push(k); }
+      if (groups[k].length < PER_KIND) groups[k].push(h.it);
+    });
+    order.sort(function (a, b) { return KIND_ORDER.indexOf(a) - KIND_ORDER.indexOf(b); });
+
+    var html = '';
+    order.forEach(function (k) {
+      var shown = groups[k].length;
+      html += '<div class="s-grp"><em>' + k + '</em><span>' + counts[k] + ' 条' +
+        (counts[k] > shown ? '　显示前 ' + shown : '') + '</span></div>';
+      groups[k].forEach(function (it) {
+        html += rowHTML(it, kw, HITS.length);
+        HITS.push(it);
+      });
+    });
+    html += '<div class="s-foot"><span>匹配 ' + hits.length + ' 条 · 按' + yearLabel() + '排序</span>' +
+      '<span><kbd>↑</kbd><kbd>↓</kbd> 选择　<kbd>Enter</kbd> 打开　<kbd>Esc</kbd> 关闭</span></div>';
+    panel.innerHTML = html;
+    panel.classList.add('on');
+    panel.scrollTop = 0;
+
+    Array.prototype.forEach.call(panel.querySelectorAll('.s-row'), function (el) {
+      el.onclick = function () { activate(+el.getAttribute('data-h')); };
+    });
+  }
+
+  function yearLabel() { return S.year === 'all' ? '2021–2026 累计' : S.year + ' 年'; }
+
+  function showDefault() {
+    var topProv = [], topFac = [];
+    (SR.u || []).slice().sort(function (a, b) { return b[1] - a[1]; })
+      .slice(0, 4).forEach(function (r) { topProv.push({ k: '省', n: r[0], ln: r[0], q: r[1], y: r[2], d: { prov: r[0] } }); });
+    (SR.f || []).forEach(function (r) {
+      topFac.push({ k: '厂家', n: r[0], ln: r[0], q: r[1], y: r[3], d: { amt: r[2], top: r[4], pc: r[5] } });
+    });
+    topFac.sort(function (a, b) { return b.q - a.q; });
+
+    HITS = topProv.concat(topFac.slice(0, 5));
+    ACTIVE = -1;
+    var html = '<div class="s-grp"><em>销量 TOP 省份</em><span>点击下钻</span></div>';
+    topProv.forEach(function (it, i) { html += rowHTML(it, '', i); });
+    html += '<div class="s-grp"><em>市占率 TOP 厂家</em><span>点击看详情</span></div>';
+    topFac.slice(0, 5).forEach(function (it, i) { html += rowHTML(it, '', topProv.length + i); });
+    html += '<div class="s-foot"><span>支持厂家 / 型号 / 省份 / 区县 / 乡镇 / 经销商　·　<kbd>/</kbd> 快速聚焦</span>' +
+      '<span><kbd>Esc</kbd> 关闭</span></div>';
+    panel.innerHTML = html;
+    panel.classList.add('on');
+    Array.prototype.forEach.call(panel.querySelectorAll('.s-row'), function (el) {
+      el.onclick = function () { activate(+el.getAttribute('data-h')); };
+    });
+  }
+
+  function closePanel() {
+    panel.classList.remove('on');
+    ACTIVE = -1;
+  }
+
+  function setActive(i) {
+    var rows = panel.querySelectorAll('.s-row');
+    if (!rows.length) return;
+    ACTIVE = (i + rows.length) % rows.length;
+    Array.prototype.forEach.call(rows, function (r, j) { r.classList.toggle('act', j === ACTIVE); });
+    var cur = rows[ACTIVE];
+    if (cur) {
+      var pr = panel.getBoundingClientRect(), cr = cur.getBoundingClientRect();
+      if (cr.top < pr.top) panel.scrollTop -= (pr.top - cr.top) + 4;
+      else if (cr.bottom > pr.bottom) panel.scrollTop += (cr.bottom - pr.bottom) + 4;
+    }
+  }
+
+  function activate(i) {
+    var it = HITS[i];
+    if (!it) return;
+    closePanel();
+    var d = it.d || {};
+    if (it.k === '省') { S.prov = d.prov; S.county = null; S.tab = 'region'; }
+    else if (it.k === '区县') { S.prov = d.prov; S.county = d.county; S.tab = 'region'; }
+    else if (it.k === '乡镇') { S.prov = d.prov; S.county = d.county; S.tab = 'region'; }
+    else if (it.k === '经销商') { S.prov = d.prov; S.county = null; S.tab = 'dealer'; }
+    else { openEntity(it); return; }
+    renderAll();
+  }
+
+  /* ---------- 实体详情（厂家 / 型号 / 品目）---------- */
+  var mask = document.getElementById('entMask');
+  var card = document.getElementById('entCard');
+  var ENT = [];
+
+  function barRow(name, val, max, extra, idx) {
+    var w = max ? Math.max(2, Math.round(val / max * 100)) : 2;
+    return '<div class="ebar' + (idx != null ? ' click' : '') + '"' + (idx != null ? ' data-p="' + idx + '"' : '') + '>' +
+      '<div class="n" title="' + esc(name) + '">' + esc(name) + '</div>' +
+      '<div class="t"><i style="width:' + w + '%"></i></div>' +
+      '<div class="v">' + (extra || fmtShort(val)) + '</div></div>';
+  }
+
+  function openEntity(it) {
+    var years = D.meta.years;
+    var y6 = it.y || [];
+    var amt = it.d.amt || 0;
+    var avg = it.q ? amt / it.q : 0;
+    var tag = it.k;
+
+    var kpis = [
+      { l: '累计销量', v: fmtQty(it.q), u: '台' },
+      { l: '累计销售额', v: amt ? fmtMoney(amt) : '—', u: amt ? '元' : '' },
+      { l: '单台均价', v: avg ? fmtInt(avg) : '—', u: avg ? '元/台' : '' },
+      { l: it.k === '型号' ? '覆盖省份' : '覆盖省级单元', v: (it.d.pc || 0) || '—', u: it.d.pc ? '个' : '' }
+    ];
+    var html = '<div class="ent-hd"><h3>' + esc(it.n) + '</h3><span class="tag">' + tag + '</span>' +
+      '<button class="x" id="entClose">×</button></div>' +
+      '<div class="ent-sub">' + esc(subOf(it)) + (it.d.fac ? '　·　所属厂家：' + esc(shortCorp(it.d.fac)) : '') + '</div>' +
+      '<div class="ent-kpis">' + kpis.map(function (k) {
+        return '<div class="ent-kpi"><div class="l">' + k.l + '</div><div class="v">' + k.v +
+          (k.u ? '<small>' + k.u + '</small>' : '') + '</div></div>';
+      }).join('') + '</div><div class="ent-cols">';
+
+    // 年份分布
+    var maxY = Math.max.apply(null, y6.concat([1]));
+    html += '<div class="ent-col"><div class="ent-sec">年份销量<span>台</span></div>';
+    years.forEach(function (y, i) {
+      var v = y6[i] || 0;
+      html += barRow(y + '', v, maxY, v ? fmtInt(v) : '—');
+    });
+    html += '</div>';
+
+    // 分省 TOP
+    var top = (it.d.top || []).slice(0, 7);
+    if (top.length) {
+      var maxP = Math.max.apply(null, top.map(function (t) { return t[1]; }).concat([1]));
+      html += '<div class="ent-col"><div class="ent-sec">分省销量 TOP' + top.length + '<span>点击下钻</span></div>';
+      top.forEach(function (t, i) {
+        html += barRow(shortProv(UNITS[t[0]]), t[1], maxP, fmtInt(t[1]), i);
+      });
+      html += '</div>';
+    } else {
+      html += '<div class="ent-col"><div class="ent-sec">分省销量</div>' +
+        '<div class="ent-empty">该品目无分省明细索引</div></div>';
+    }
+    html += '</div>';
+
+    ENT = top.map(function (t) { return UNITS[t[0]]; });
+    card.innerHTML = html;
+    mask.classList.add('on');
+    document.getElementById('entClose').onclick = closeEntity;
+    Array.prototype.forEach.call(card.querySelectorAll('.ebar.click'), function (el) {
+      el.onclick = function () {
+        var p = ENT[+el.getAttribute('data-p')];
+        if (!p) return;
+        closeEntity();
+        S.prov = p;
+        S.county = null;
+        S.tab = 'region';
+        renderAll();
+      };
+    });
+  }
+
+  function closeEntity() { mask.classList.remove('on'); }
+  mask.onclick = function (e) { if (e.target === mask) closeEntity(); };
+
+  /* ---------- 搜索事件 ---------- */
+  var timer = null;
+  input.addEventListener('input', function () {
+    var v = input.value.trim();
+    box.classList.toggle('has-val', !!v);
+    clearTimeout(timer);
+    timer = setTimeout(function () {
+      if (!v) { showDefault(); return; }
+      renderPanel(match(v.toLowerCase()), v.toLowerCase());
+    }, 110);
+  });
+  input.addEventListener('focus', function () {
+    if (input.value.trim()) {
+      var v = input.value.trim().toLowerCase();
+      renderPanel(match(v), v);
+    } else {
+      showDefault();
+    }
+  });
+  input.addEventListener('keydown', function (e) {
+    var rows = panel.querySelectorAll('.s-row').length;
+    if (e.key === 'ArrowDown') { e.preventDefault(); setActive(ACTIVE + 1); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(ACTIVE - 1); }
+    else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (ACTIVE >= 0) activate(ACTIVE);
+      else if (rows) activate(0);
+    } else if (e.key === 'Escape') { closePanel(); input.blur(); }
+  });
+  clearBtn.onclick = function () {
+    input.value = '';
+    box.classList.remove('has-val');
+    input.focus();
+    showDefault();
+  };
+  document.addEventListener('click', function (e) {
+    if (!box.contains(e.target)) closePanel();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && mask.classList.contains('on')) closeEntity();
+    // 「/」或 Ctrl/Cmd+K 直接聚焦搜索框
+    var typing = /^(INPUT|TEXTAREA)$/.test((e.target.tagName || ''));
+    if (!typing && ((e.key === '/' ) || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k'))) {
+      e.preventDefault();
+      input.focus();
+      input.select();
+    }
+  });
+
   /* ---------- 自适应 ---------- */
   function fit() {
     var stage = document.getElementById('stage');

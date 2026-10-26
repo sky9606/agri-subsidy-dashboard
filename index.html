@@ -17,6 +17,15 @@
           <p class="sub">农机市场与竞品分析数据大屏　|　品目代码 07　|　2021–2026</p>
         </div>
       </div>
+      <div class="hd-m">
+        <div class="search" id="searchBox">
+          <i class="s-ico"></i>
+          <input id="searchInput" type="text" spellcheck="false" autocomplete="off" title="快捷键 / 或 Ctrl+K"
+                 placeholder="搜索厂家 / 型号 / 省份 / 区县 / 经销商，如：华测、北斗、黑龙江">
+          <button class="s-clr" id="searchClear" title="清空">×</button>
+          <div class="s-panel" id="searchPanel"></div>
+        </div>
+      </div>
       <div class="hd-r">
         <div class="seg" id="yearSeg"></div>
         <div class="meta">
@@ -77,6 +86,10 @@
       <span>数据来源：全国农机购置与应用补贴信息公开平台（各省公示系统）　|　口径：补贴机具范围＝田间监测及作业监控设备（品目代码 07），销售额＝单台销售价格×购买数量，统计范围 26 个省级单元（北大荒、新疆兵团、农垦及计划单列市并入所属省）　|　购机者信息不展示，仅做区域统计</span>
       <span>地图边界：DataV GeoAtlas（含台湾、港澳、南海诸岛）　|　本内容由 AI 生成，请核实后使用</span>
     </footer>
+
+    <div class="ent-mask" id="entMask">
+      <div class="ent-card" id="entCard"></div>
+    </div>
 
   </div>
 </div>

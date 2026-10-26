@@ -106,6 +106,12 @@ def main():
     month = defaultdict(lambda: defaultdict(lambda: [0.0, 0.0]))
     price_y = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
     model_y = defaultdict(lambda: defaultdict(float))
+    # --- 搜索索引专用（保持小基数以保证前端可整表下发）---
+    model_p = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))  # 型号 -> 省 -> 年 -> 台
+    model_a = defaultdict(float)                                            # 型号 -> 销售额
+    model_fac = defaultdict(lambda: defaultdict(float))                     # 型号 -> 厂家 -> 台
+    fac_amt = defaultdict(float)                                            # 厂家 -> 销售额
+    dealer_geo = {}                                                         # 经销商 -> (省, 县)
 
     print("扫描明细表 ...")
     n = 0
@@ -179,13 +185,20 @@ def main():
             fac_y["全国"][y][fac] += q
             fac_a[u][fac] += q
             fac_a["全国"][fac] += q
+            fac_amt[fac] += amt
         if dealer:
             deal_y[u][y][dealer] += q
             deal_y["全国"][y][dealer] += q
             deal_a[u][dealer] += q
             deal_a["全国"][dealer] += q
+            if dealer not in dealer_geo:
+                dealer_geo[dealer] = (u, county or "")
         if r["model"]:
             model_y[r["year"]][r["model"]] += q
+            model_p[r["model"]][u][y] += q
+            model_a[r["model"]] += amt
+            if fac:
+                model_fac[r["model"]][fac] += q
 
         if r["ym"]:
             for key in (u, "全国"):
@@ -217,6 +230,124 @@ def main():
         stats_out[u] = d
 
     units = sorted([u for u in stats_out if u != "全国"])
+
+    # ---------------- 搜索索引 ----------------
+    # 只收录小基数维度（省/区县/厂家/型号/品目/经销商/乡镇），前端线性扫一遍即可即时出结果。
+    # 购机者姓名按脱敏要求不入索引。每条记录末尾的 y6 是 2021–2026 逐年销量，供搜索命中后按当前年份过滤。
+    uidx = {u: i for i, u in enumerate(units)}
+
+    def y6(getter):
+        return [int(getter(y) or 0) for y in YEARS]
+
+    s_u, s_c, s_t, s_f, s_m, s_k, s_d = [], [], [], [], [], [], []
+    cidx = {}
+
+    for u in units:
+        st = stats_out[u]
+        s_u.append([u, st["all"][1], y6(lambda y: (st.get(str(y)) or [0, 0, 0])[1])])
+
+    for u in units:
+        for c in sorted(county_qt[u]):
+            yd = county_qt[u][c]
+            tot = sum(v[0] for v in yd.values())
+            if tot <= 0:
+                continue
+            cidx[(u, c)] = len(s_c)
+            s_c.append([c, uidx[u], tot, y6(lambda y: yd.get(y, [0, 0])[0])])
+
+    for u in units:
+        for c, tmap in town_qt[u].items():
+            ci = cidx.get((u, c))
+            if ci is None:
+                continue
+            for t, yd in tmap.items():
+                tot = sum(v[0] for v in yd.values())
+                if tot <= 0:
+                    continue
+                s_t.append([t, ci, tot, y6(lambda y: yd.get(y, [0, 0])[0])])
+
+    fac_names = set()
+    for d in fac_y["全国"].values():
+        fac_names.update(d)
+    for fac in fac_names:
+        per = [0] * 6
+        prov = defaultdict(float)
+        for u in units:
+            for i, y in enumerate(YEARS):
+                v = fac_y[u].get(y, {}).get(fac, 0)
+                if v:
+                    per[i] += v
+                    prov[u] += v
+        tot = sum(per)
+        if tot <= 0:
+            continue
+        top = sorted(prov.items(), key=lambda kv: -kv[1])[:6]
+        s_f.append([fac, tot, fac_amt.get(fac, 0), per,
+                    [[uidx[u], v] for u, v in top], len(prov)])
+
+    for mdl, pdata in model_p.items():
+        per = [0] * 6
+        prov = defaultdict(float)
+        for u, yd in pdata.items():
+            for i, y in enumerate(YEARS):
+                v = yd.get(y, 0)
+                if v:
+                    per[i] += v
+                    prov[u] += v
+        tot = sum(per)
+        if tot <= 0:
+            continue
+        fc = model_fac.get(mdl)
+        fac = max(fc.items(), key=lambda kv: kv[1])[0] if fc else ""
+        top = sorted(prov.items(), key=lambda kv: -kv[1])[:6]
+        s_m.append([mdl, fac, tot, model_a.get(mdl, 0), per,
+                    [[uidx[u], v] for u, v in top], len(prov)])
+
+    cat_names = set()
+    for d in cat_y["全国"].values():
+        cat_names.update(d)
+    for cat in cat_names:
+        per = y6(lambda y: cat_y["全国"].get(y, {}).get(cat, 0))
+        prov = defaultdict(float)
+        for u in units:
+            for y in YEARS:
+                v = cat_y[u].get(y, {}).get(cat, 0)
+                if v:
+                    prov[u] += v
+        top = sorted(prov.items(), key=lambda kv: -kv[1])[:6]
+        s_k.append([cat, sum(per), per, [[uidx[u], v] for u, v in top], len(prov)])
+
+    dealer_year = defaultdict(lambda: [0] * 6)
+    dealer_unit = {}
+    for u in units:
+        for y, dd in deal_y[u].items():
+            i = YEARS.index(y)
+            for dl, v in dd.items():
+                dealer_year[dl][i] += v
+                dealer_unit.setdefault(dl, u)
+    for dl, per in dealer_year.items():
+        tot = sum(per)
+        if tot <= 0:
+            continue
+        u = dealer_unit.get(dl, units[0])
+        c = dealer_geo.get(dl, (u, ""))[1]
+        s_d.append([dl, uidx[u], cidx.get((u, c), -1), tot, per])
+
+    for arr, ki in ((s_c, 2), (s_t, 2), (s_f, 1), (s_m, 2), (s_k, 1), (s_d, 3)):
+        arr.sort(key=lambda x, ki=ki: -x[ki])
+    search = {"u": s_u, "c": s_c, "t": s_t, "f": s_f, "m": s_m, "k": s_k, "d": s_d}
+
+    def intify(x):
+        if isinstance(x, float):
+            return int(round(x))
+        if isinstance(x, list):
+            return [intify(v) for v in x]
+        return x
+
+    search = {k: intify(v) for k, v in search.items()}
+    print("搜索索引: 省 %d / 区县 %d / 乡镇 %d / 厂家 %d / 型号 %d / 品目 %d / 经销商 %d"
+          % (len(s_u), len(s_c), len(s_t), len(s_f), len(s_m), len(s_k), len(s_d)))
+
 
     out = {
         "meta": {
@@ -262,6 +393,8 @@ def main():
                 } for c in cstats[u]
             } for u in cstats
         },
+        # 搜索索引：u 省 / c 区县 / t 乡镇 / f 厂家 / m 型号 / k 品目 / d 经销商
+        "search": search,
     }
 
     js = "window.DASH_DATA = " + json.dumps(out, ensure_ascii=False, separators=(",", ":")) + ";"
