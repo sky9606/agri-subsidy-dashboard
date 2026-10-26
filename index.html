@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>全国农机补贴数据大屏 · 田间监测与作业监控设备</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="viewport">
+  <div id="stage">
+
+    <header class="hd">
+      <div class="hd-l">
+        <div class="logo"></div>
+        <div>
+          <h1>全国农机补贴 · 田间监测与作业监控设备</h1>
+          <p class="sub">农机市场与竞品分析数据大屏　|　品目代码 07　|　2021–2026</p>
+        </div>
+      </div>
+      <div class="hd-r">
+        <div class="seg" id="yearSeg"></div>
+        <div class="meta">
+          数据更新 <b id="updTime">--</b><br>
+          样本记录 <b id="updRows">--</b> 条
+        </div>
+      </div>
+    </header>
+
+    <section class="kpis" id="kpis"></section>
+
+    <section class="main">
+      <div class="col">
+        <div class="panel">
+          <div class="ph"><span>品目结构 TOP10</span><em id="catHint">按销量（台）</em></div>
+          <div class="pb"><div id="cCat"></div></div>
+        </div>
+        <div class="panel">
+          <div class="ph"><span>价格带分布</span><em id="priceHint">按销量占比</em></div>
+          <div class="pb"><div id="cPrice"></div></div>
+        </div>
+      </div>
+
+      <div class="panel map-panel">
+        <div class="ph">
+          <div class="crumbs" id="crumbs"></div>
+          <div class="seg small" id="metricSeg"></div>
+        </div>
+        <div class="pb"><div id="cMap"></div></div>
+        <div class="map-tip">点击地图省份下钻　·　点击表格行进入区县　·　面包屑返回上级</div>
+        <div class="empty-note" id="emptyNote">该区域在所选年份无公示数据</div>
+      </div>
+
+      <div class="col">
+        <div class="panel">
+          <div class="ph"><span>厂家市占率 TOP10</span><em id="facHint">按销量</em></div>
+          <div class="pb"><div id="cFac"></div></div>
+        </div>
+        <div class="panel">
+          <div class="ph"><span id="rankTitle">区域销量 TOP10</span><em id="rankHint">点击省份下钻</em></div>
+          <div class="pb"><div id="cRank"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="bottom">
+      <div class="panel">
+        <div class="ph"><span>月度销售趋势</span><em id="trendHint">近 24 个月</em></div>
+        <div class="pb"><div id="cTrend"></div></div>
+      </div>
+      <div class="panel tbl-panel">
+        <div class="ph"><div class="tabs" id="tabs"></div></div>
+        <div class="table-wrap" id="tableWrap"></div>
+      </div>
+    </section>
+
+    <footer class="ft">
+      <span>数据来源：全国农机购置与应用补贴信息公开平台（各省公示系统）　|　口径：补贴机具范围＝田间监测及作业监控设备（品目代码 07），销售额＝单台销售价格×购买数量，统计范围 26 个省级单元（北大荒、新疆兵团、农垦及计划单列市并入所属省）　|　购机者信息不展示，仅做区域统计</span>
+      <span>地图边界：DataV GeoAtlas（含台湾、港澳、南海诸岛）　|　本内容由 AI 生成，请核实后使用</span>
+    </footer>
+
+  </div>
+</div>
+
+<script src="assets/echarts.min.js"></script>
+<script src="assets/china.js"></script>
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
