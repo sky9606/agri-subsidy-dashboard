@@ -41,3 +41,16 @@ https://sky9606.github.io/agri-subsidy-dashboard/
 python ../scraper/daily_update.bat   # 每日抓取（Windows 计划任务 03:00）
 python build_data.py                 # 重新聚合生成 data.js
 ```
+
+## 重新发布
+
+站点托管在 GitHub Pages（`main` 分支根目录），数据更新后重新推送即可，约 30 秒生效：
+
+```bash
+python build_data.py
+git add -A
+git commit -m "更新数据 $(date +%F)"
+git push origin main
+```
+
+查看构建状态：仓库 Actions 页签，或 `https://sky9606.github.io/agri-subsidy-dashboard/`
