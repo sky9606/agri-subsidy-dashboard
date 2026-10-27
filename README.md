@@ -49,13 +49,18 @@ python build_data.py                 # 重新聚合生成 data.js
 
 ## 重新发布
 
-站点托管在 GitHub Pages（`main` 分支根目录），数据更新后重新推送即可，约 30 秒生效：
+站点托管在 GitHub Pages（`main` 分支根目录），数据更新后重新发布即可，约 30 秒生效。日常无需手工操作，`scraper/daily_update.bat` 已包含重建与发布。
+
+本机 `github.com:443` 常被代理拦截（`CONNECT tunnel failed, 502`），而 `api.github.com` 可用，所以 `scraper/daily_update.py` 的发布环节是两级：
+
+1. 先 `git push`（正常时优先，保留完整 git 历史）
+2. 失败则自动改用 GitHub API：比对索引 blob SHA 与远端 tree，只上传真正变化的文件，再 PATCH `main` 引用
+
+发布走了哪条路、是否成功，都会写进 `data/daily_update.log`。若要手工重建：
 
 ```bash
-python build_data.py
-git add -A
-git commit -m "更新数据 $(date +%F)"
-git push origin main
+python build_data.py          # 重新聚合生成 data.js
+python ../scraper/daily_update.py   # 含发布（自动选 git 或 API）
 ```
 
 查看构建状态：仓库 Actions 页签，或 `https://sky9606.github.io/agri-subsidy-dashboard/`
