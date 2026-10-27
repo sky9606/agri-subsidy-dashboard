@@ -17,6 +17,14 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(BASE)
 DB = os.path.join(ROOT, "data", "subsidy.db")
 OUT = os.path.join(BASE, "data.js")
+CITY_MAP = os.path.join(ROOT, "data", "geo", "county_city.json")
+
+# 农垦/兵团等非行政区单位，无法归入地级市时的兜底节点（不猜，集中标注）
+CITY_FALLBACK = {
+    "黑龙江省": "农垦系统（未划入地市）",
+    "新疆维吾尔自治区": "兵团团场（未划入地市）",
+}
+CITY_FALLBACK_DEFAULT = "未划入地市"
 
 YEARS = [2021, 2022, 2023, 2024, 2025, 2026]
 
@@ -66,6 +74,16 @@ def topn(d, n):
     return [[k, round(v, 1)] for k, v in sorted(d.items(), key=lambda kv: -kv[1])[:n]]
 
 
+def load_city_map():
+    """区县 → 地级市。没有映射的（农垦/兵团等非行政区单位）归入兜底节点。"""
+    try:
+        with open(CITY_MAP, encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print("⚠ 缺少 data/geo/county_city.json，先运行 scraper/fetch_geo.py 与 geo_map.py")
+        return {}
+
+
 def town_out(counties):
     """county -> {year: [[town,[qty,amt]], ...] TOP12}"""
     out = {}
@@ -97,6 +115,13 @@ def main():
     ccat = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(float))))
     cfac = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(float))))
     town_qt = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: [0.0, 0.0]))))
+    # --- 市级聚合（口径与县级完全对称，前端下钻到市时各面板可复用同一套取数逻辑）---
+    city_qt = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: [0.0, 0.0])))
+    city_stats = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: [0, 0.0, 0.0, 0.0, set(), set()])))
+    city_month = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: [0.0, 0.0])))
+    city_price = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(float))))
+    city_cat = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(float))))
+    city_fac = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(float))))
     cat_y = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
     fac_y = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
     deal_y = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
@@ -114,6 +139,9 @@ def main():
     dealer_geo = {}                                                         # 经销商 -> (省, 县)
 
     print("扫描明细表 ...")
+    city_map = load_city_map()
+    city_miss = {}
+
     n = 0
     rows = cur.execute("""
         SELECT region, year, county, town, category, factory, dealer, model,
@@ -175,6 +203,36 @@ def main():
                 t[0] += q
                 t[1] += amt
 
+        # ---- 市级（区县 → 地级市；农垦/兵团等无归属的进兜底节点）----
+        city = None
+        if county:
+            city = city_map.get("%s|%s" % (u, county))
+            if city is None:
+                city = CITY_FALLBACK.get(u, CITY_FALLBACK_DEFAULT)
+                city_miss[u] = city_miss.get(u, 0) + 1
+            cq = city_qt[u][city][y]
+            cq[0] += q
+            cq[1] += amt
+            for yy in (y, "all"):
+                sy = city_stats[u][city][yy]
+                sy[0] += 1
+                sy[1] += q
+                sy[2] += amt
+                sy[3] += sub
+                sy[4].add(county)
+                if town:
+                    sy[5].add((county, town))
+            if r["ym"]:
+                cm2 = city_month[u][city][r["ym"]]
+                cm2[0] += q
+                cm2[1] += amt
+            if cat:
+                for yy in (y, "all"):
+                    city_cat[u][city][yy][cat] += q
+            if fac:
+                for yy in (y, "all"):
+                    city_fac[u][city][yy][fac] += q
+
         if cat:
             cat_y[u][y][cat] += q
             cat_y["全国"][y][cat] += q
@@ -215,6 +273,9 @@ def main():
                 if county:
                     for yy in (y, "all"):
                         cprice[u][county][yy][label] += q
+                if city:
+                    for yy in (y, "all"):
+                        city_price[u][city][yy][label] += q
                 break
 
     print("  记录 %d 条" % n)
@@ -240,6 +301,7 @@ def main():
         return [int(getter(y) or 0) for y in YEARS]
 
     s_u, s_c, s_t, s_f, s_m, s_k, s_d = [], [], [], [], [], [], []
+    s_y = []
     cidx = {}
 
     for u in units:
@@ -254,6 +316,14 @@ def main():
                 continue
             cidx[(u, c)] = len(s_c)
             s_c.append([c, uidx[u], tot, y6(lambda y: yd.get(y, [0, 0])[0])])
+
+    for u in units:
+        for city in sorted(city_qt[u]):
+            yd = city_qt[u][city]
+            tot = sum(v[0] for v in yd.values())
+            if tot <= 0:
+                continue
+            s_y.append([city, uidx[u], tot, y6(lambda y: yd.get(y, [0, 0])[0])])
 
     for u in units:
         for c, tmap in town_qt[u].items():
@@ -333,9 +403,9 @@ def main():
         c = dealer_geo.get(dl, (u, ""))[1]
         s_d.append([dl, uidx[u], cidx.get((u, c), -1), tot, per])
 
-    for arr, ki in ((s_c, 2), (s_t, 2), (s_f, 1), (s_m, 2), (s_k, 1), (s_d, 3)):
+    for arr, ki in ((s_c, 2), (s_y, 2), (s_t, 2), (s_f, 1), (s_m, 2), (s_k, 1), (s_d, 3)):
         arr.sort(key=lambda x, ki=ki: -x[ki])
-    search = {"u": s_u, "c": s_c, "t": s_t, "f": s_f, "m": s_m, "k": s_k, "d": s_d}
+    search = {"u": s_u, "y": s_y, "c": s_c, "t": s_t, "f": s_f, "m": s_m, "k": s_k, "d": s_d}
 
     def intify(x):
         if isinstance(x, float):
@@ -345,8 +415,8 @@ def main():
         return x
 
     search = {k: intify(v) for k, v in search.items()}
-    print("搜索索引: 省 %d / 区县 %d / 乡镇 %d / 厂家 %d / 型号 %d / 品目 %d / 经销商 %d"
-          % (len(s_u), len(s_c), len(s_t), len(s_f), len(s_m), len(s_k), len(s_d)))
+    print("搜索索引: 省 %d / 市 %d / 区县 %d / 乡镇 %d / 厂家 %d / 型号 %d / 品目 %d / 经销商 %d"
+          % (len(s_u), len(s_y), len(s_c), len(s_t), len(s_f), len(s_m), len(s_k), len(s_d)))
 
 
     out = {
@@ -393,6 +463,29 @@ def main():
                 } for c in cstats[u]
             } for u in cstats
         },
+        # 市级：省 -> 市 -> 年 -> [records, qty, amount, subsidy, counties, towns]
+        "cityStat": {u: {c: {str(y): [int(v[0]), round(v[1], 1), round(v[2], 0), round(v[3], 0),
+                                     len(v[4]), len(v[5])]
+                            for y, v in yd.items()} for c, yd in cd.items()}
+                     for u, cd in city_stats.items()},
+        # 市级：省 -> 市 -> 年 -> [qty, amount]
+        "cityYear": {u: {c: {str(y): [round(v[0], 1), round(v[1], 0)] for y, v in yd.items()}
+                         for c, yd in cd.items()} for u, cd in city_qt.items()},
+        # 市级明细（月度/品目/厂家/价格带），与县级结构一致，保证下钻到市时四张面板口径不变
+        "cityDetail": {
+            u: {
+                c: {
+                    "month": {k: [round(v[0], 1), round(v[1], 0)]
+                              for k, v in sorted(city_month[u][c].items())},
+                    "cat": {str(y): topn(d, 6) for y, d in city_cat[u][c].items()},
+                    "fac": {str(y): topn(d, 8) for y, d in city_fac[u][c].items()},
+                    "price": {str(y): [[lab, round(d[lab], 1)] for _, _, lab in PRICE_BANDS if d.get(lab)]
+                              for y, d in city_price[u][c].items()},
+                } for c in city_stats[u]
+            } for u in city_stats
+        },
+        # 区县 -> 地级市（前端用于"市→区县"筛选、搜索定位）
+        "countyCity": city_map,
         # 搜索索引：u 省 / c 区县 / t 乡镇 / f 厂家 / m 型号 / k 品目 / d 经销商
         "search": search,
     }

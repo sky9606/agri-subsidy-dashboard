@@ -3,9 +3,10 @@
   'use strict';
 
   var D = window.DASH_DATA;
-  var S = { year: 'all', metric: 'qty', prov: null, county: null, tab: 'region' };
+  var S = { year: 'all', metric: 'qty', prov: null, city: null, county: null, tab: 'region' };
   var YEAR_LIST = ['all'].concat(D.meta.years.map(String));
   var UNITS = D.meta.units || [];
+  var CITY_MAP = D.countyCity || {};
 
   /* ---------- 工具 ---------- */
   function fmtInt(n) {
@@ -25,22 +26,61 @@
     return fmtInt(n);
   }
   /* 坐标轴用：短、无单位空格 */
+  /* 粗粒度数字：轴标签与条形图数值共用。万级保留 2 位、十万级 1 位，
+     否则 11,133 会被压成「1万」，看不出量级差异。 */
   function fmtShort(n) {
     if (n == null || isNaN(n)) return '';
-    if (Math.abs(n) >= 1e8) return +(n / 1e8).toFixed(1) + '亿';
-    if (Math.abs(n) >= 1e4) return +(n / 1e4).toFixed(0) + '万';
+    var a = Math.abs(n);
+    if (a >= 1e8) return +(n / 1e8).toFixed(a >= 1e9 ? 1 : 2) + '亿';
+    if (a >= 1e4) return +(n / 1e4).toFixed(a >= 1e6 ? 0 : (a >= 1e5 ? 1 : 2)) + '万';
     return String(Math.round(n));
   }
   function pct(a, b) { return b ? (a / b * 100) : 0; }
   function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); }
   function cut(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n) + '…' : s; }
+  /* 只剥掉「尾部」的行政后缀，否则「农垦系统（未划入地市）」这类兜底名会被削坏；
+     「东台市」这类区县名不能过这个函数，否则会丢掉「市」字。 */
   function shortProv(n) {
-    return String(n || '').replace(/(维吾尔|壮族|回族|特别行政区|自治区|省|市)/g, '') || n;
+    var s = String(n || '');
+    if (s.indexOf('（') >= 0) return s;
+    return s.replace(/(维吾尔|壮族|回族|特别行政区|自治区|省|市)+$/, '') || s;
   }
 
-  /* ---------- 作用域：全国 / 省 / 县 ---------- */
-  function scopeName() { return S.county || S.prov || '全国'; }
+  /* ---------- 作用域：全国 / 省 / 市 / 县 ---------- */
+  function scopeName() { return S.county || S.city || S.prov || '全国'; }
   function scopeProv() { return S.prov || '全国'; }
+
+  /* 某地级市下辖的区县（排除"市即区县"的直辖市/省直辖县级单位自身） */
+  var CITY_COUNTIES = null;
+  function countiesInCity(prov, city) {
+    if (!CITY_COUNTIES) {
+      CITY_COUNTIES = {};
+      Object.keys(CITY_MAP).forEach(function (k) {
+        var i = k.indexOf('|');
+        var p = k.slice(0, i), c = k.slice(i + 1), city2 = CITY_MAP[k];
+        if (c === city2) return;                 // 直辖市/省直辖：市名=区县名，不算下级
+        (CITY_COUNTIES[p + '|' + city2] || (CITY_COUNTIES[p + '|' + city2] = [])).push(c);
+      });
+    }
+    return CITY_COUNTIES[prov + '|' + city] || [];
+  }
+  function cityOfCounty(prov, county) {
+    return CITY_MAP[prov + '|' + county] || null;
+  }
+  /* 直辖市的"市"其实就是区县，选中后直接当县级用 */
+  function cityIsLeaf(prov, city) {
+    return countiesInCity(prov, city).length === 0;
+  }
+  /* 北京/天津/上海/重庆：省下面直接就是区县，没有地级市这一层，
+     所以标题不能写「地级市排行」，否则与地图上的区县对不上。 */
+  var MUNIS = ['北京市', '天津市', '上海市', '重庆市'];
+  function isMunicipality(prov) {
+    return !!prov && MUNIS.indexOf(prov) >= 0;
+  }
+  /* 排行榜纵轴宽度有限，「农垦系统（未划入地市）」这类兜底名去掉括号说明 */
+  function rankName(n) {
+    return String(n || '').replace(/（未划入地市）|（未归市）/, '');
+  }
 
   function statOf(y) {
     if (S.county && S.prov) {
@@ -48,24 +88,29 @@
       if (!c) return null;
       return [c[0], c[1], c[2], c[3], 1, 0, c[4]];
     }
+    if (S.city && S.prov) {
+      var ct = ((D.cityStat[S.prov] || {})[S.city] || {})[y];
+      if (!ct) return null;
+      return [ct[0], ct[1], ct[2], ct[3], ct[4], 0, ct[5]];
+    }
     var s = (D.statsYear[scopeName()] || {})[y];
     return s || null;
   }
 
   /* ---------- 序列读取 ---------- */
-  function countyDetail() {
-    return ((D.countyDetail || {})[S.prov] || {})[S.county] || null;
+  function scopeDetail() {
+    if (S.county) return ((D.countyDetail || {})[S.prov] || {})[S.county] || null;
+    if (S.city) return ((D.cityDetail || {})[S.prov] || {})[S.city] || null;
+    return null;
   }
   function scopeLabel() {
-    return S.county ? S.county : (S.prov ? shortProv(S.prov) : '全国');
+    return S.county ? S.county : (S.city ? S.city : (S.prov ? shortProv(S.prov) : '全国'));
   }
 
   function series(key, n) {
-    if (S.county) {
-      var cd = countyDetail();
-      if (cd && cd[key]) return (cd[key][S.year] || []).slice(0, n);
-      // 无县级口径（如经销商）→ 回落到省级，调用方需按省级分母计算占比
-    }
+    var cd = scopeDetail();
+    if (cd && cd[key]) return (cd[key][S.year] || []).slice(0, n);
+    // 无下级口径（如经销商）→ 回落到省级，调用方需按省级分母计算占比
     var scope = scopeProv();
     var out;
     if (S.year === 'all') {
@@ -76,9 +121,22 @@
     return out.slice(0, n);
   }
 
+  /* 省下的市列表 */
+  function citiesOf(prov) {
+    var cs = D.cityStat[prov] || {};
+    return Object.keys(cs).map(function (c) {
+      var v = cs[c][S.year] || cs[c]['all'] || [0, 0, 0, 0, 0, 0];
+      return [c, v[1], v[2]];
+    }).filter(function (d) { return d[1] > 0; })
+      .sort(function (a, b) { return b[1] - a[1]; });
+  }
+
   function countiesOf(u) {
     var cs = D.countyYear[u] || {};
-    return Object.keys(cs).map(function (c) {
+    var only = S.city ? countiesInCity(u, S.city) : null;
+    return Object.keys(cs).filter(function (c) {
+      return !only || only.indexOf(c) >= 0;
+    }).map(function (c) {
       var yy = cs[c];
       if (S.year === 'all') {
         var it = (D.countyStat[u] || {})[c] || {};
@@ -97,9 +155,9 @@
   }
 
   function scopeMonths() {
-    if (S.county) {
-      var cd = countyDetail();
-      var cm = (cd && cd.month) || {};
+    var cd = scopeDetail();
+    if (cd) {
+      var cm = cd.month || {};
       var ks = Object.keys(cm).sort();
       if (S.year !== 'all') ks = ks.filter(function (k) { return k.indexOf(S.year + '-') === 0; });
       return ks.map(function (k) { return { m: k, qty: cm[k][0], amt: cm[k][1] }; });
@@ -113,13 +171,9 @@
 
   function priceBands() {
     var labels = ['≤1千', '1千-3千', '3千-5千', '5千-1万', '1万-2万', '>2万'];
-    var per;
-    if (S.county) {
-      var cd = countyDetail();
-      per = (cd && cd.price && cd.price[S.year]) || [];
-    } else {
-      per = (D.priceBands[scopeProv()] || D.priceBands['全国'] || {})[S.year] || [];
-    }
+    var cd = scopeDetail();
+    var per = (cd && cd.price && cd.price[S.year]) ||
+      ((D.priceBands[scopeProv()] || D.priceBands['全国'] || {})[S.year] || []);
     var m = {};
     per.forEach(function (it) { m[it[0]] = it[1]; });
     return labels.map(function (l) { return [l, Math.round(m[l] || 0)]; });
@@ -167,6 +221,20 @@
         { lab: '补贴总额', val: fmtMoney(st[3]), unit: '元', sub: '占销售额 <b>' + pct(st[3], st[2]).toFixed(1) + '%</b>', cls: 'k4' },
         { lab: '单台均价', val: fmtInt(avg), unit: '元', sub: '按销量加权', cls: 'k5' },
         { lab: '覆盖乡镇', val: fmtInt(st[6]), unit: '个', sub: '本区县内', cls: 'k6' }
+      ];
+    } else if (S.city) {
+      cards = [
+        { lab: '累计销量', val: fmtQty(st[1]), unit: '台', sub: '记录 <b>' + fmtInt(st[0]) + '</b> 条', cls: '' },
+        { lab: '累计销售额', val: fmtMoney(st[2]), unit: '元', sub: '均价 <b>' + fmtInt(avg) + '</b> 元/台', cls: 'k2' },
+        {
+          lab: '最新月销量', val: last ? fmtInt(last.qty) : '-', unit: '台',
+          sub: last ? (last.m + (partial ? '（未完）' : '') +
+            (mom === null ? '' : ' · 环比 <b class="' + (mom >= 0 ? 'up' : 'down') + '">' + (mom >= 0 ? '+' : '') + mom.toFixed(1) + '%</b>')) : '无数据',
+          cls: 'k3'
+        },
+        { lab: '补贴总额', val: fmtMoney(st[3]), unit: '元', sub: '占销售额 <b>' + pct(st[3], st[2]).toFixed(1) + '%</b>', cls: 'k4' },
+        { lab: '下辖区县', val: fmtInt(st[4]), unit: '个', sub: '有公示数据', cls: 'k5' },
+        { lab: '覆盖乡镇', val: fmtInt(st[6]), unit: '个', sub: '全市合计', cls: 'k6' }
       ];
     } else {
       cards = [
@@ -248,42 +316,87 @@
     return cuts.length - 1;
   }
 
+  /* 省级市界地图按需注入（每省约 100KB，全部预加载会拖慢首屏） */
+  var MAPS = {};
+  var mapScope = 'china';
+
+  function loadProvMap(prov, cb) {
+    if (MAPS[prov]) { cb(); return; }
+    if (window.PROV_MAP && window.PROV_MAP[prov]) {
+      echarts.registerMap('prov:' + prov, window.PROV_MAP[prov]);
+      MAPS[prov] = 1; cb(); return;
+    }
+    var sc = document.createElement('script');
+    sc.src = 'assets/map/' + encodeURIComponent(prov) + '.js';
+    sc.onload = function () {
+      if (window.PROV_MAP && window.PROV_MAP[prov]) {
+        echarts.registerMap('prov:' + prov, window.PROV_MAP[prov]);
+        MAPS[prov] = 1;
+      }
+      cb();
+    };
+    sc.onerror = function () { cb(); };
+    document.head.appendChild(sc);
+  }
+
+  function drillCity(prov, city) {
+    S.city = city;
+    S.county = cityIsLeaf(prov, city) ? city : null;   // 直辖市/省直辖县级：市即区县
+    S.tab = 'region';
+  }
+
+  function onMapClick(p) {
+    if (!p || !p.name || p.name === '南海诸岛') return;
+    if (mapScope === 'china') {
+      if (UNITS.indexOf(p.name) < 0) return;           // 无数据区域不响应
+      S.prov = p.name;
+      S.city = null;
+      S.county = null;
+      renderAll();
+      return;
+    }
+    var prov = S.prov;
+    if (!prov) return;
+    if (p.name === S.city) {                           // 再次点击已选中的市 → 退回省
+      S.city = null;
+      S.county = null;
+    } else if (!S.county || cityOfCounty(prov, S.county) !== p.name) {
+      drillCity(prov, p.name);
+    }
+    renderAll();
+  }
+
   function renderMap() {
     if (!mapChart) {
       echarts.registerMap('china', window.CHINA_GEO);
       mapChart = ec('cMap');
-      mapChart.on('click', function (p) {
-        if (!p || !p.name || p.name === '南海诸岛') return;
-        if (UNITS.indexOf(p.name) < 0) return;          // 无数据区域不响应
-        S.county = null;
-        S.prov = (S.prov === p.name) ? null : p.name;
-        renderAll();
-      });
+      mapChart.on('click', onMapClick);
     }
+    if (!S.prov) { mapScope = 'china'; drawChina(); return; }
+    mapScope = 'prov';
+    loadProvMap(S.prov, function () { if (S.prov) drawProv(); });
+  }
 
+  function mapTipText() {
+    return mapScope === 'china'
+      ? '点击省份下钻到地级市　·　再点区县/表格继续下钻'
+      : '点击地级市下钻到区县　·　面包屑返回上级';
+  }
+
+  function drawChina() {
     var data = UNITS.map(function (u) {
       var st = (D.statsYear[u] || {})[S.year];
       if (!st) return null;
-      return {
-        name: u, value: S.metric === 'qty' ? st[1] : st[2],
-        qty: st[1], amt: st[2], counties: st[4]
-      };
+      return { name: u, value: S.metric === 'qty' ? st[1] : st[2], qty: st[1], amt: st[2], counties: st[4] };
     }).filter(function (d) { return d && d.value > 0; });
 
-    var vals = data.map(function (d) { return d.value; });
-    var bp = buildPieces(vals);
-
+    var bp = buildPieces(data.map(function (d) { return d.value; }));
     data.forEach(function (d) {
       var bi = bandOf(d.value, bp.cuts);
-      if (S.prov === d.name) {
-        d.itemStyle = { areaColor: '#ffb648', borderColor: '#fff8e6', borderWidth: 1.6, shadowBlur: 20, shadowColor: 'rgba(255,182,72,.75)' };
-        d.label = { show: true, color: '#2a1a00', fontWeight: 'bold', fontSize: 10.5 };
-      } else {
-        // 亮底用深色字、暗底用浅色字，保证都可读
-        d.label = { color: bi >= 3 ? '#05243c' : 'rgba(198,226,255,.72)' };
-      }
+      d.label = { color: bi >= 3 ? '#05243c' : 'rgba(198,226,255,.72)' };
     });
 
+    mapChart.clear();
     mapChart.setOption({
       backgroundColor: 'transparent',
       tooltip: Object.assign({}, TIP, {
@@ -294,7 +407,7 @@
             '销量　　<b>' + fmtInt(p.data.qty) + '</b> 台<br>' +
             '销售额　<b>' + fmtMoney(p.data.amt) + '</b> 元<br>' +
             '覆盖区县 <b>' + fmtInt(p.data.counties) + '</b> 个' +
-            (S.prov === p.name ? '<br><span style="color:#ffb648">已下钻 · 再次点击返回</span>' : '<br><span style="color:#5c7fa6">点击下钻</span>');
+            '<br><span style="color:#5c7fa6">点击下钻到地级市</span>';
         }
       }),
       visualMap: {
@@ -324,6 +437,78 @@
         data: data
       }]
     }, true);
+    setTipText();
+  }
+
+  function drawProv() {
+    var prov = S.prov;
+    var cs = D.cityStat[prov] || {};
+    var sel = S.city || (S.county ? cityOfCounty(prov, S.county) : null);
+
+    var data = Object.keys(cs).map(function (c) {
+      var v = cs[c][S.year];
+      if (!v) return null;
+      return { name: c, value: S.metric === 'qty' ? v[1] : v[2], qty: v[1], amt: v[2], counties: v[4] };
+    }).filter(function (d) { return d && d.value > 0; });
+
+    var bp = buildPieces(data.map(function (d) { return d.value; }));
+    data.forEach(function (d) {
+      var bi = bandOf(d.value, bp.cuts);
+      if (d.name === sel) {
+        d.itemStyle = { areaColor: '#ffb648', borderColor: '#fff8e6', borderWidth: 1.6, shadowBlur: 20, shadowColor: 'rgba(255,182,72,.75)' };
+        d.label = { show: true, color: '#2a1a00', fontWeight: 'bold', fontSize: 11 };
+      } else {
+        d.label = { color: bi >= 3 ? '#05243c' : 'rgba(198,226,255,.72)' };
+      }
+    });
+
+    mapChart.clear();
+    mapChart.setOption({
+      backgroundColor: 'transparent',
+      tooltip: Object.assign({}, TIP, {
+        trigger: 'item',
+        formatter: function (p) {
+          if (!p.data || !p.data.qty) return '<b>' + p.name + '</b><br><span style="color:#7a99b8">暂无公示数据</span>';
+          return '<b style="color:#37d6ff">' + p.name + '</b><br>' +
+            '销量　　<b>' + fmtInt(p.data.qty) + '</b> 台<br>' +
+            '销售额　<b>' + fmtMoney(p.data.amt) + '</b> 元<br>' +
+            '下辖区县 <b>' + fmtInt(p.data.counties) + '</b> 个' +
+            (p.name === sel ? '<br><span style="color:#ffb648">已下钻 · 再次点击返回</span>'
+              : '<br><span style="color:#5c7fa6">点击下钻到区县</span>');
+        }
+      }),
+      visualMap: {
+        type: 'piecewise', pieces: bp.pieces, left: 14, top: 8,
+        itemWidth: 12, itemHeight: 9, itemGap: 7, showLabel: true,
+        textStyle: { color: '#8fb2d9', fontSize: 10 },
+        selectedMode: false
+      },
+      series: [{
+        type: 'map', map: 'prov:' + prov, roam: false,
+        aspectScale: 1, layoutCenter: ['50%', '52%'], layoutSize: '96%',
+        label: {
+          show: true, color: 'rgba(198,226,255,.72)', fontSize: 10,
+          formatter: function (p) { return cut(shortProv(p.name), 7); }
+        },
+        itemStyle: {
+          areaColor: '#0a1c33',
+          borderColor: 'rgba(84,160,245,.42)', borderWidth: .8,
+          shadowColor: 'rgba(30,120,220,.45)', shadowBlur: 14, shadowOffsetY: 5
+        },
+        emphasis: {
+          label: { show: true, color: '#fff', fontSize: 11, fontWeight: 'bold' },
+          itemStyle: { areaColor: '#ffc85e', borderColor: '#fff', borderWidth: 1.2, shadowBlur: 24, shadowColor: 'rgba(255,182,72,.75)' }
+        },
+        select: { disabled: true },
+        data: data
+      }]
+    }, true);
+    setTipText();
+  }
+
+  function setTipText() {
+    var el = document.querySelector('.map-tip');
+    if (el) el.textContent = mapTipText();
   }
 
   /* ---------- 品目 TOP10 ---------- */
@@ -435,7 +620,8 @@
     if (rest > 0) data.push({ name: '其他厂家', value: rest, itemStyle: { color: 'rgba(90,130,175,.45)' } });
 
     document.getElementById('facHint').textContent =
-      (S.county ? '占本县销量' : ('占' + (S.prov ? '全省' : '全国'))) + ' · ' + scopeLabel();
+      (S.county ? '占本县销量' : (S.city ? '占本市销量' : ('占' + (S.prov ? '全省' : '全国')))) +
+      ' · ' + scopeLabel();
 
     ec('cFac').setOption({
       tooltip: Object.assign({}, TIP, {
@@ -468,10 +654,15 @@
       title.textContent = '乡镇销量 TOP10';
       hint.textContent = S.county;
       rows = townsOf(S.prov, S.county).slice(0, 10).map(function (d) { return [d[0], d[1]]; });
-    } else if (S.prov) {
+    } else if (S.city && S.prov) {
       title.textContent = '区县销量 TOP10';
-      hint.textContent = '点击省份下钻 · 点表格进乡镇';
+      hint.textContent = '点击区县下钻 · ' + scopeLabel();
       rows = countiesOf(S.prov).slice(0, 10).map(function (d) { return [d[0], d[1]]; });
+    } else if (S.prov) {
+      var muni = isMunicipality(S.prov);
+      title.textContent = (muni ? '区县' : '地级市') + '销量 TOP10';
+      hint.textContent = muni ? '点击区县下钻' : '点击城市下钻';
+      rows = citiesOf(S.prov).slice(0, 10).map(function (d) { return [d[0], d[1]]; });
     } else {
       title.textContent = '区域销量 TOP10';
       hint.textContent = '点击省份下钻';
@@ -496,7 +687,11 @@
       },
       yAxis: {
         type: 'category', data: arr.map(function (d) {
-          return S.prov && !S.county ? cut(d[0], 7) : (S.county ? cut(d[0], 8) : shortProv(d[0]));
+          var n = rankName(d[0]);
+          if (!S.prov) return shortProv(n);                 // 省份：去「省」字
+          if (S.county) return cut(n, 8);                   // 乡镇
+          if (S.city) return cut(n, 8);                     // 区县：保留「市/县/区」，与地图一致
+          return cut(shortProv(n), 7);                      // 地级市：去「市」字
         }),
         axisLabel: Object.assign({}, AXIS.label, { fontSize: 10.5 }), axisLine: AXIS.line, axisTick: { show: false }
       },
@@ -516,7 +711,8 @@
       var name = arr[p.dataIndex] && arr[p.dataIndex][0];
       if (!name) return;
       if (S.county) return;
-      if (!S.prov) { S.prov = name; S.county = null; renderAll(); }
+      if (!S.prov) { S.prov = name; S.city = null; S.county = null; renderAll(); }
+      else if (!S.city) { drillCity(S.prov, name); renderAll(); }
       else { S.county = name; renderAll(); }
     });
   }
@@ -529,7 +725,8 @@
     var amt = ms.map(function (d) { return +(d.amt / 1e4).toFixed(1); });
 
     document.getElementById('trendHint').textContent =
-      (S.county ? S.county + ' · ' : '') + (S.year === 'all' ? '近 24 个月' : S.year + ' 年') +
+      ((S.county || S.city) ? scopeLabel() + ' · ' : '') +
+      (S.year === 'all' ? ms.length + ' 个月' : S.year + ' 年') +
       (S.year === '2026' ? '（截至 10 月）' : '');
 
     ec('cTrend').setOption({
@@ -587,7 +784,8 @@
   /* ---------- 明细表 ---------- */
   function renderTable() {
     var tabs = document.getElementById('tabs');
-    var regionName = S.county ? '乡镇排行' : (S.prov ? '区县排行' : '省份排行');
+    var muni = S.prov && !S.city && isMunicipality(S.prov);   // 直辖市无地级市层
+    var regionName = S.county ? '乡镇排行' : (S.city ? '区县排行' : (S.prov ? (muni ? '区县排行' : '地级市排行') : '省份排行'));
     var defs = [
       { k: 'region', n: regionName },
       { k: 'dealer', n: S.county ? '经销商(全省)' : '经销商排行' },
@@ -607,9 +805,12 @@
       if (S.county && S.prov) {
         head = ['#', '乡镇', '销量(台)', '销售额', '占比'];
         list = townsOf(S.prov, S.county).map(function (d) { return { n: d[0], q: d[1], a: d[2] }; });
-      } else if (S.prov) {
+      } else if (S.city && S.prov) {
         head = ['#', '区县', '销量(台)', '销售额', '占比'];
         list = countiesOf(S.prov).slice(0, 60).map(function (d) { return { n: d[0], q: d[1], a: d[2] }; });
+      } else if (S.prov) {
+        head = ['#', muni ? '区县' : '地级市', '销量(台)', '销售额', '占比'];
+        list = citiesOf(S.prov).map(function (d) { return { n: d[0], q: d[1], a: d[2] }; });
       } else {
         head = ['#', '省份', '销量(台)', '销售额', '占比'];
         list = UNITS.map(function (u) {
@@ -667,8 +868,15 @@
       Array.prototype.forEach.call(document.querySelectorAll('#tableWrap tbody tr'), function (tr) {
         tr.onclick = function () {
           var n = tr.getAttribute('data-name');
-          if (!S.prov && UNITS.indexOf(n) >= 0) { S.prov = n; S.county = null; renderAll(); }
-          else if (S.prov && !S.county) { S.county = n; renderAll(); }
+          if (!S.prov) {
+            if (UNITS.indexOf(n) >= 0) { S.prov = n; S.city = null; S.county = null; renderAll(); }
+          } else if (!S.city) {
+            drillCity(S.prov, n);
+            renderAll();
+          } else if (!S.county) {
+            S.county = n;
+            renderAll();
+          }
         };
       });
     }
@@ -679,17 +887,22 @@
     var el = document.getElementById('crumbs');
     var html = '<a class="' + (S.prov ? '' : 'cur') + '" data-lv="0">全国</a>';
     if (S.prov) {
-      html += '<i>/</i><a class="' + (S.county ? '' : 'cur') + '" data-lv="1">' + esc(S.prov) + '</a>';
+      var atProv = !S.city;
+      html += '<i>/</i><a class="' + (atProv ? 'cur' : '') + '" data-lv="1">' + esc(S.prov) + '</a>';
+    }
+    if (S.city && S.city !== S.county) {
+      html += '<i>/</i><a class="' + (S.county ? '' : 'cur') + '" data-lv="2">' + esc(S.city) + '</a>';
     }
     if (S.county) {
-      html += '<i>/</i><a class="cur" data-lv="2">' + esc(S.county) + '</a>';
+      html += '<i>/</i><a class="cur" data-lv="3">' + esc(S.county) + '</a>';
     }
     el.innerHTML = html;
     Array.prototype.forEach.call(el.querySelectorAll('a'), function (a) {
       a.onclick = function () {
         var lv = +a.getAttribute('data-lv');
-        if (lv === 0) { S.prov = null; S.county = null; renderAll(); }
-        else if (lv === 1) { S.county = null; renderAll(); }
+        if (lv === 0) { S.prov = null; S.city = null; S.county = null; renderAll(); }
+        else if (lv === 1) { S.city = null; S.county = null; renderAll(); }
+        else if (lv === 2) { S.county = null; renderAll(); }
       };
     });
   }
@@ -731,7 +944,7 @@
   /* 索引来自 D.search（build_data.py 预聚合）：省 26 / 区县 2.1k / 乡镇 1.7万 /
      厂家 131 / 型号 293 / 品目 7 / 经销商 1万。总量约 3 万条，本地线性扫描即可毫秒级出结果。 */
   var SR = D.search || {};
-  var KIND_ORDER = ['省', '厂家', '型号', '品目', '区县', '乡镇', '经销商'];
+  var KIND_ORDER = ['省', '市', '厂家', '型号', '品目', '区县', '乡镇', '经销商'];
   var PER_KIND = 6;
   var LIST = (function () {
     var arr = [];
@@ -739,6 +952,7 @@
       arr.push({ k: kind, n: String(name), ln: String(name).toLowerCase(), q: q || 0, y: y6 || null, d: d || {} });
     }
     (SR.u || []).forEach(function (r) { add('省', r[0], r[1], r[2], { prov: r[0] }); });
+    (SR.y || []).forEach(function (r) { add('市', r[0], r[2], r[3], { prov: UNITS[r[1]], city: r[0] }); });
     (SR.c || []).forEach(function (r) { add('区县', r[0], r[2], r[3], { prov: UNITS[r[1]], county: r[0] }); });
     (SR.t || []).forEach(function (r) {
       var c = (SR.c || [])[r[1]];
@@ -781,6 +995,7 @@
     if (it.k === '型号' && it.d.fac) return shortCorp(it.d.fac);
     if (it.k === '厂家') return '覆盖 ' + (it.d.pc || 0) + ' 个省级单元';
     if (it.k === '经销商') return [it.d.county, shortProv(it.d.prov)].filter(Boolean).join(' · ') || '—';
+    if (it.k === '市') return shortProv(it.d.prov);
     if (it.k === '区县') return shortProv(it.d.prov);
     if (it.k === '乡镇') return (it.d.county || '') + ' · ' + shortProv(it.d.prov);
     if (it.k === '品目') return '品目 07 细分';
@@ -895,10 +1110,11 @@
     if (!it) return;
     closePanel();
     var d = it.d || {};
-    if (it.k === '省') { S.prov = d.prov; S.county = null; S.tab = 'region'; }
-    else if (it.k === '区县') { S.prov = d.prov; S.county = d.county; S.tab = 'region'; }
-    else if (it.k === '乡镇') { S.prov = d.prov; S.county = d.county; S.tab = 'region'; }
-    else if (it.k === '经销商') { S.prov = d.prov; S.county = null; S.tab = 'dealer'; }
+    if (it.k === '省') { S.prov = d.prov; S.city = null; S.county = null; S.tab = 'region'; }
+    else if (it.k === '市') { S.prov = d.prov; drillCity(d.prov, d.city); }
+    else if (it.k === '区县') { S.prov = d.prov; S.city = cityOfCounty(d.prov, d.county); S.county = d.county; S.tab = 'region'; }
+    else if (it.k === '乡镇') { S.prov = d.prov; S.city = cityOfCounty(d.prov, d.county); S.county = d.county; S.tab = 'region'; }
+    else if (it.k === '经销商') { S.prov = d.prov; S.city = null; S.county = null; S.tab = 'dealer'; }
     else { openEntity(it); return; }
     renderAll();
   }
@@ -971,6 +1187,7 @@
         if (!p) return;
         closeEntity();
         S.prov = p;
+        S.city = null;
         S.county = null;
         S.tab = 'region';
         renderAll();
